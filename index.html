@@ -1,0 +1,1478 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Millefoglie - Layered Paper Craft</title>
+  <!-- Relative href, because vite's base is './' so the build drops on any host path. -->
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <script>
+    // Stamp the theme before first paint so there is no flash of the wrong
+    // palette. Mirrors ThemeManager's resolution order - keep both in sync.
+    (function () {
+      var theme;
+      try { theme = localStorage.getItem('millefoglie.theme'); } catch (e) { theme = null; }
+      if (theme !== 'light' && theme !== 'dark') {
+        theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+      }
+      document.documentElement.setAttribute('data-theme', theme);
+    })();
+  </script>
+  <style>
+    /* ---------------------------------------------------------------
+       Theme tokens. Dark is the original palette, unchanged; light is a
+       warm paper-neutral set. Everything below reads from these.
+       --------------------------------------------------------------- */
+    :root[data-theme="dark"] {
+      --bg: #1a1a2e;
+      --panel: #16213e;
+      --panel-alt: #0f3460;
+      --panel-raised: #1a1a4e;
+      --border: #0f3460;
+      --border-strong: #1a1a4e;
+      --text: #eee;
+      --text-dim: #aaa;
+      --text-faint: #888;
+      --accent: #e94560;
+      --accent-hover: #ff6b6b;
+      --accent-soft: rgba(233, 69, 96, 0.15);
+      --info: #4a90d9;
+      --info-hover: #6ab0ff;
+      --info-soft: rgba(74, 144, 217, 0.15);
+      --warning: #ff9800;
+      --hover: #1a4a7a;
+      --disabled: #444;
+      --viewport-bg: #0f0f1a;
+      --preview-bg: #0f0f1a;
+      --scrim: rgba(0, 0, 0, 0.8);
+      --shadow: 0 8px 24px rgba(0, 0, 0, 0.5);
+      --focus-ring: #6ab0ff;
+    }
+
+    :root[data-theme="light"] {
+      --bg: #f4f1ea;
+      --panel: #fbf9f5;
+      --panel-alt: #eae4d9;
+      --panel-raised: #ffffff;
+      --border: #ded6c8;
+      --border-strong: #c6bcaa;
+      --text: #1a1a2e;
+      --text-dim: #5b5b6d;
+      --text-faint: #7c7c8b;
+      --accent: #cc2f49;
+      --accent-hover: #ab2039;
+      --accent-soft: rgba(204, 47, 73, 0.12);
+      --info: #2c6ba8;
+      --info-hover: #1d5285;
+      --info-soft: rgba(44, 107, 168, 0.12);
+      --warning: #b06600;
+      --hover: #e2dacb;
+      --disabled: #c9c2b4;
+      --viewport-bg: #e9e4da;
+      --preview-bg: #ffffff;
+      --scrim: rgba(40, 36, 30, 0.55);
+      --shadow: 0 8px 24px rgba(60, 52, 40, 0.18);
+      --focus-ring: #2c6ba8;
+    }
+
+    * {
+      margin: 0;
+      padding: 0;
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      overflow: hidden;
+    }
+
+    /* One visible focus treatment for every interactive element. */
+    :focus-visible {
+      outline: 2px solid var(--focus-ring);
+      outline-offset: 2px;
+      border-radius: 4px;
+    }
+
+    #app {
+      display: flex;
+      height: 100vh;
+      width: 100vw;
+    }
+
+    .panel {
+      display: flex;
+      flex-direction: column;
+      height: 100%;
+    }
+
+    .panel-header {
+      padding: 12px 16px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      font-weight: 600;
+      font-size: 14px;
+    }
+
+    #viewer-panel {
+      flex: 1;
+      min-width: 0;
+    }
+
+    #viewer-container {
+      flex: 1;
+      /* Flex items default to min-height:auto, i.e. never smaller than their
+         content. The WebGL canvas below would make that content a fixed pixel
+         height, so the panel could only ever grow. */
+      min-height: 0;
+      position: relative;
+      overflow: hidden;
+      background: var(--viewport-bg);
+    }
+
+    /* Three.js stamps an explicit px width/height on its canvas. In flow that
+       height feeds back into the container's size, so shrinking the viewport
+       (browser zoom) left the panel at its old height and pushed the status bar
+       and layer preview off the bottom of the screen. Out of flow, the
+       container is sized by the flex layout alone and the canvas follows it. */
+    #viewer-container > canvas {
+      position: absolute;
+      top: 0;
+      left: 0;
+    }
+
+    #sidebar {
+      width: 320px;
+      background: var(--panel);
+      border-left: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+    }
+
+    #controls-container {
+      padding: 16px;
+      overflow-y: auto;
+      flex: 1;
+    }
+
+    #preview-panel {
+      position: absolute;
+      bottom: 16px;
+      right: 16px;
+      width: 300px;
+      height: 280px;
+      /* Stay inside the viewport once zoom shrinks it below the preferred size,
+         instead of growing past the top/left edge of the viewer. */
+      max-width: calc(100% - 32px);
+      max-height: calc(100% - 32px);
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      z-index: 10;
+      box-shadow: var(--shadow);
+    }
+
+    #preview-panel.hidden {
+      display: none;
+    }
+
+    .preview-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px 12px;
+      background: var(--panel-alt);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .download-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      background: var(--panel-raised);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .download-btn:hover:not(:disabled) {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: #fff;
+    }
+
+    .download-btn:active:not(:disabled) {
+      background: var(--accent-hover);
+    }
+
+    .download-btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    #preview-container {
+      flex: 1;
+      /* Let the SVG area absorb the shrink so the header and layer slider keep
+         their size when the panel hits its max-height. */
+      min-height: 0;
+      background: var(--preview-bg);
+      overflow: hidden;
+    }
+
+    /* ---------------------------------------------------------------
+       Sidebar controls - 4px spacing scale, hairline group separators
+       --------------------------------------------------------------- */
+    .control-group {
+      padding-bottom: 16px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .control-group:last-child {
+      border-bottom: none;
+      margin-bottom: 0;
+      padding-bottom: 0;
+    }
+
+    .control-group > label {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 11px;
+      color: var(--text-faint);
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      font-weight: 600;
+    }
+
+    .control-group input[type="number"],
+    .control-group select {
+      width: 100%;
+      padding: 8px 12px;
+      background: var(--panel-alt);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 14px;
+    }
+
+    .control-group .value-display {
+      font-size: 12px;
+      color: var(--text-faint);
+      text-align: right;
+    }
+
+    /* Sub-labels inside a group (paper width/height, spacing, etc.) */
+    .sub-label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-dim);
+      text-transform: none;
+      letter-spacing: normal;
+      margin-bottom: 4px;
+    }
+
+    .inline-label {
+      font-size: 12px;
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: normal;
+      margin: 0;
+    }
+
+    .field-row {
+      display: flex;
+      gap: 8px;
+    }
+
+    .field-row.center {
+      align-items: center;
+    }
+
+    .field {
+      flex: 1;
+    }
+
+    .empty-hint {
+      font-size: 12px;
+      color: var(--text-faint);
+    }
+
+    /* ---------------------------------------------------------------
+       Range inputs - the app's primary control, so give them a real
+       track/thumb and a taller hit area.
+       --------------------------------------------------------------- */
+    input[type="range"] {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 100%;
+      height: 20px;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    input[type="range"]:disabled {
+      cursor: not-allowed;
+      opacity: 0.5;
+    }
+
+    input[type="range"]::-webkit-slider-runnable-track {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--panel-alt);
+      border: 1px solid var(--border-strong);
+    }
+
+    input[type="range"]::-webkit-slider-thumb {
+      -webkit-appearance: none;
+      appearance: none;
+      width: 14px;
+      height: 14px;
+      margin-top: -6px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--panel);
+      transition: transform 0.1s, background 0.15s;
+    }
+
+    input[type="range"]:hover:not(:disabled)::-webkit-slider-thumb {
+      background: var(--accent-hover);
+      transform: scale(1.15);
+    }
+
+    input[type="range"]::-moz-range-track {
+      height: 4px;
+      border-radius: 2px;
+      background: var(--panel-alt);
+      border: 1px solid var(--border-strong);
+    }
+
+    input[type="range"]::-moz-range-thumb {
+      width: 12px;
+      height: 12px;
+      border-radius: 50%;
+      background: var(--accent);
+      border: 2px solid var(--panel);
+      transition: transform 0.1s, background 0.15s;
+    }
+
+    input[type="range"]:hover:not(:disabled)::-moz-range-thumb {
+      background: var(--accent-hover);
+      transform: scale(1.15);
+    }
+
+    .control-group input[type="range"] {
+      margin-bottom: 4px;
+    }
+
+    /* ---------------------------------------------------------------
+       Buttons - one shared transition/hover/active/disabled contract
+       --------------------------------------------------------------- */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 10px 16px;
+      background: var(--accent);
+      border: none;
+      border-radius: 4px;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s, opacity 0.15s;
+      width: 100%;
+      margin-bottom: 8px;
+    }
+
+    .btn:hover:not(:disabled) {
+      background: var(--accent-hover);
+    }
+
+    .btn:active:not(:disabled) {
+      filter: brightness(0.92);
+    }
+
+    .btn:disabled {
+      background: var(--disabled);
+      color: var(--text-faint);
+      cursor: not-allowed;
+    }
+
+    .btn-secondary {
+      background: var(--panel-alt);
+      color: var(--text);
+    }
+
+    .btn-secondary:hover:not(:disabled) {
+      background: var(--hover);
+    }
+
+    .btn-tool {
+      padding: 8px 12px;
+      font-size: 12px;
+    }
+
+    .btn-tool.active {
+      background: var(--info);
+      color: #fff;
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 16px;
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border-strong);
+    }
+
+    .toolbar .btn {
+      width: auto;
+      margin-bottom: 0;
+    }
+
+    .toolbar-spacer {
+      margin-left: auto;
+    }
+
+    /* Compact square icon button used in the toolbar and help header */
+    .icon-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 30px;
+      height: 30px;
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .icon-btn:hover {
+      background: var(--hover);
+      border-color: var(--info);
+    }
+
+    .icon-btn svg {
+      width: 16px;
+      height: 16px;
+    }
+
+    /* Theme button shows the icon for the theme it switches *to* */
+    :root[data-theme="dark"] #theme-btn .icon-sun { display: block; }
+    :root[data-theme="dark"] #theme-btn .icon-moon { display: none; }
+    :root[data-theme="light"] #theme-btn .icon-sun { display: none; }
+    :root[data-theme="light"] #theme-btn .icon-moon { display: block; }
+
+    .checkbox-group {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 12px;
+    }
+
+    .checkbox-group input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .checkbox-group label {
+      margin-bottom: 0;
+      font-size: 14px;
+      color: var(--text);
+      text-transform: none;
+      letter-spacing: normal;
+      cursor: pointer;
+    }
+
+    #layer-navigator {
+      padding: 8px 12px;
+      background: var(--panel-alt);
+      border-top: 1px solid var(--border-strong);
+    }
+
+    #layer-info {
+      display: flex;
+      justify-content: space-between;
+      margin-bottom: 4px;
+      font-size: 12px;
+      color: var(--text-faint);
+    }
+
+    #layer-slider {
+      width: 100%;
+    }
+
+    .drop-zone {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: var(--accent-soft);
+      border: 3px dashed var(--accent);
+      z-index: 100;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.2s;
+    }
+
+    .drop-zone.active {
+      opacity: 1;
+      pointer-events: auto;
+    }
+
+    .drop-zone-text {
+      font-size: 24px;
+      color: var(--accent);
+    }
+
+    /* ---------------------------------------------------------------
+       Empty state - shown in the viewport until a model is loaded
+       --------------------------------------------------------------- */
+    #empty-state {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      z-index: 5;
+      color: var(--text-faint);
+      cursor: pointer;
+      user-select: none;
+      transition: color 0.15s;
+    }
+
+    #empty-state.hidden {
+      display: none;
+    }
+
+    #empty-state:hover {
+      color: var(--text-dim);
+    }
+
+    #empty-state svg {
+      width: 56px;
+      height: 56px;
+      opacity: 0.6;
+    }
+
+    .empty-state-title {
+      font-size: 16px;
+      font-weight: 500;
+    }
+
+    .empty-state-hint {
+      font-size: 12px;
+    }
+
+    .status-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 8px 16px;
+      background: var(--viewport-bg);
+      border-top: 1px solid var(--border);
+      font-size: 12px;
+      color: var(--text-faint);
+    }
+
+    #status-message {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    /* Mesh stats persist here, so a new status message no longer wipes them */
+    #status-stats {
+      flex: none;
+      color: var(--text-dim);
+      white-space: nowrap;
+    }
+
+    .packing-progress {
+      display: none;
+      margin-top: 12px;
+      padding: 12px;
+      background: var(--panel-alt);
+      border-radius: 4px;
+    }
+
+    .packing-progress.visible {
+      display: block;
+    }
+
+    .packing-progress-header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .packing-progress-info {
+      display: flex;
+      justify-content: space-between;
+      flex: 1;
+      font-size: 12px;
+      color: var(--text);
+    }
+
+    .packing-cancel-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      background: transparent;
+      border: 1px solid var(--text-faint);
+      border-radius: 4px;
+      color: var(--text-faint);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .packing-cancel-btn:hover {
+      background: var(--accent-soft);
+      border-color: var(--accent);
+      color: var(--accent);
+    }
+
+    .packing-progress-bar {
+      width: 100%;
+      height: 6px;
+      background: var(--panel-raised);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+
+    .packing-progress-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.1s;
+      width: 0%;
+    }
+
+    .rod-list {
+      max-height: 150px;
+      overflow-y: auto;
+      margin-top: 8px;
+    }
+
+    .rod-item {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 8px;
+      background: var(--panel-alt);
+      border-radius: 4px;
+      margin-bottom: 4px;
+      font-size: 12px;
+      cursor: pointer;
+      border: 1px solid transparent;
+      transition: background 0.15s, border-color 0.15s;
+    }
+
+    .rod-item:hover {
+      background: var(--hover);
+    }
+
+    .rod-item.selected {
+      background: var(--hover);
+      border-color: var(--info);
+    }
+
+    .rod-item .delete-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: var(--text-faint);
+      padding: 4px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .rod-item .delete-btn:hover {
+      color: var(--accent);
+      background: var(--accent-soft);
+    }
+
+    .rod-actions {
+      display: flex;
+      gap: 4px;
+    }
+
+    .rod-item .visibility-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      background: transparent;
+      border: none;
+      color: var(--text-faint);
+      padding: 4px;
+      border-radius: 4px;
+      cursor: pointer;
+      transition: color 0.15s, background 0.15s;
+    }
+
+    .rod-item .visibility-btn:hover {
+      color: var(--info);
+      background: var(--info-soft);
+    }
+
+    .rod-item .visibility-btn .eye-closed {
+      display: none;
+    }
+
+    .rod-item .visibility-btn.hidden .eye-open {
+      display: none;
+    }
+
+    .rod-item .visibility-btn.hidden .eye-closed {
+      display: block;
+    }
+
+    .rod-item .visibility-btn.hidden {
+      opacity: 0.6;
+    }
+
+    .warning-text {
+      color: var(--warning);
+      font-size: 12px;
+      margin-top: 8px;
+    }
+
+    .export-buttons {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+
+    .export-buttons .btn {
+      margin-bottom: 0;
+    }
+
+    .progress-overlay {
+      position: fixed;
+      top: 0;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      background: var(--scrim);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      z-index: 1000;
+      color: #fff;
+    }
+
+    .progress-overlay.hidden {
+      display: none;
+    }
+
+    .progress-text {
+      font-size: 18px;
+      margin-bottom: 16px;
+    }
+
+    .progress-bar {
+      width: 300px;
+      height: 8px;
+      background: rgba(255, 255, 255, 0.25);
+      border-radius: 4px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      background: var(--accent);
+      transition: width 0.2s;
+    }
+
+    .rod-label {
+      background: var(--accent);
+      color: #fff;
+      padding: 4px 12px;
+      border-radius: 14px;
+      font-size: 24px;
+      font-weight: bold;
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      white-space: nowrap;
+      opacity: 0.9;
+    }
+
+    /* ---------------------------------------------------------------
+       Viewport overlay toolbar
+       --------------------------------------------------------------- */
+    #viewer-overlay-toolbar {
+      position: absolute;
+      top: 16px;
+      left: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      z-index: 10;
+    }
+
+    /* Wrapper so a popover can anchor to its own button instead of
+       hardcoded pixel offsets from the toolbar */
+    .overlay-tool {
+      position: relative;
+      display: flex;
+    }
+
+    .overlay-divider {
+      height: 1px;
+      background: var(--border-strong);
+      margin: 2px 4px;
+    }
+
+    .overlay-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text);
+      cursor: pointer;
+      transition: background 0.15s, border-color 0.15s, color 0.15s;
+    }
+
+    .overlay-btn:hover:not(:disabled) {
+      background: var(--hover);
+      border-color: var(--info);
+    }
+
+    .overlay-btn:active:not(:disabled) {
+      filter: brightness(0.92);
+    }
+
+    .overlay-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .overlay-btn.active {
+      background: var(--info);
+      border-color: var(--info-hover);
+      color: #fff;
+    }
+
+    .overlay-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    /* Knocks the button background out behind the "+" badge on the rod icon */
+    .overlay-btn .badge-fill {
+      fill: var(--panel);
+    }
+
+    .overlay-btn:hover .badge-fill {
+      fill: var(--hover);
+    }
+
+    .overlay-btn.active .badge-fill {
+      fill: var(--info);
+    }
+
+    /* Nav-mode button swaps its icon to match the active mode */
+    #nav-mode-btn.fly .icon-orbit { display: none; }
+    #nav-mode-btn:not(.fly) .icon-fly { display: none; }
+
+    .overlay-popover {
+      position: absolute;
+      left: 48px;
+      top: 0;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      font-size: 12px;
+      white-space: nowrap;
+      box-shadow: var(--shadow);
+      z-index: 20;
+    }
+
+    .overlay-popover.visible {
+      display: flex;
+    }
+
+    .overlay-popover label {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      cursor: pointer;
+    }
+
+    .overlay-popover input[type="checkbox"],
+    .overlay-popover input[type="radio"] {
+      accent-color: var(--accent);
+      cursor: pointer;
+    }
+
+    .preset-btn {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 6px 8px;
+      background: transparent;
+      border: none;
+      border-radius: 4px;
+      color: var(--text);
+      font-size: 12px;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+
+    .preset-btn:hover {
+      background: var(--hover);
+    }
+
+    .preset-btn kbd {
+      color: var(--text-faint);
+    }
+
+    kbd {
+      display: inline-block;
+      padding: 1px 6px;
+      min-width: 20px;
+      text-align: center;
+      background: var(--panel-alt);
+      border: 1px solid var(--border-strong);
+      border-radius: 4px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 11px;
+      line-height: 1.6;
+      color: var(--text);
+    }
+
+    /* ---------------------------------------------------------------
+       Help overlay
+       --------------------------------------------------------------- */
+    .help-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 900;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .help-overlay.hidden {
+      display: none;
+    }
+
+    .help-backdrop {
+      position: absolute;
+      inset: 0;
+      background: var(--scrim);
+    }
+
+    .help-card {
+      position: relative;
+      display: flex;
+      flex-direction: column;
+      width: 100%;
+      max-width: 720px;
+      max-height: 85vh;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .help-card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 20px;
+      background: var(--panel-alt);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .help-card-header h2 {
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .help-card-body {
+      padding: 20px;
+      overflow-y: auto;
+      font-size: 13px;
+      line-height: 1.6;
+      color: var(--text-dim);
+    }
+
+    .help-section + .help-section {
+      margin-top: 24px;
+      padding-top: 20px;
+      border-top: 1px solid var(--border);
+    }
+
+    .help-section h3 {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.6px;
+      color: var(--text-faint);
+      margin-bottom: 10px;
+    }
+
+    .help-section ol,
+    .help-section ul {
+      padding-left: 20px;
+    }
+
+    .help-section li + li {
+      margin-top: 4px;
+    }
+
+    .help-section strong {
+      color: var(--text);
+      font-weight: 600;
+    }
+
+    .help-subhead {
+      margin: 14px 0 6px;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text);
+    }
+
+    .help-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    .help-table td {
+      padding: 4px 8px 4px 0;
+      vertical-align: top;
+    }
+
+    .help-table td:first-child {
+      width: 40%;
+      white-space: nowrap;
+      color: var(--text);
+    }
+
+    .help-scroll {
+      overflow-x: auto;
+    }
+  </style>
+</head>
+<body>
+  <div id="app">
+    <div id="viewer-panel" class="panel">
+      <div class="panel-header">3D Model</div>
+      <div class="toolbar">
+        <button id="load-btn" class="btn btn-tool" title="Load an STL model (or drop one on the viewport)">Load STL</button>
+        <button id="open-project-btn" class="btn btn-tool btn-secondary" title="Open a saved Millefoglie project (Ctrl+O)">Open</button>
+        <button id="save-project-btn" class="btn btn-tool btn-secondary" disabled title="Save the current project as .mfp (Ctrl+S)">Save</button>
+        <input type="file" id="file-input" accept=".stl" style="display: none;">
+        <input type="file" id="project-file-input" accept=".mfp" style="display: none;">
+
+        <button id="theme-btn" class="icon-btn toolbar-spacer" title="Toggle light / dark theme (T)" aria-label="Toggle light / dark theme">
+          <svg class="icon-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="4"/>
+            <path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>
+          </svg>
+          <svg class="icon-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>
+          </svg>
+        </button>
+        <button id="help-btn" class="icon-btn" title="Help and keyboard shortcuts (?)" aria-label="Open help">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8">
+            <circle cx="12" cy="12" r="9"/>
+            <path d="M9.2 9.2a2.8 2.8 0 1 1 3.7 2.7c-.6.2-.9.8-.9 1.4v.5"/>
+            <circle cx="12" cy="17" r="0.8" fill="currentColor" stroke="none"/>
+          </svg>
+        </button>
+      </div>
+      <div id="viewer-container">
+        <div class="drop-zone">
+          <span class="drop-zone-text">Drop STL or MFP file here</span>
+        </div>
+
+        <div id="empty-state">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.2">
+            <path d="M4 8l8-4 8 4v8l-8 4-8-4V8z"/>
+            <path d="M4 8l8 4 8-4"/>
+            <path d="M12 12v8"/>
+          </svg>
+          <div class="empty-state-title">Drop an STL file here or click Load STL</div>
+          <div class="empty-state-hint">Press <kbd>?</kbd> for help</div>
+        </div>
+
+        <div id="viewer-overlay-toolbar">
+          <!-- Show Slices button with dual icons -->
+          <button id="view-mode-btn" class="overlay-btn" title="Toggle Slices View (V)">
+            <svg class="icon-3d" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M4 8l8-4 8 4v8l-8 4-8-4V8z"/>
+              <path d="M4 8l8 4 8-4"/>
+              <path d="M12 12v8"/>
+            </svg>
+            <svg class="icon-slices" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" style="display:none">
+              <path d="M3 17l9 4 9-4v-2l-9-4-9 4v2z"/>
+              <path d="M5 11l7 3 7-3v-2l-7-3-7 3v2z"/>
+              <path d="M7 5l5 2 5-2v-2l-5-2-5 2v2z"/>
+            </svg>
+          </button>
+
+          <!-- Add Rod button -->
+          <button id="rod-tool-btn" class="overlay-btn" title="Add Rod">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <ellipse cx="10" cy="5" rx="6" ry="2"/>
+              <path d="M4 5v12c0 1.1 2.7 2 6 2s6-.9 6-2V5"/>
+              <ellipse cx="10" cy="17" rx="6" ry="2"/>
+              <circle cx="19" cy="19" r="4" class="badge-fill" stroke="currentColor"/>
+              <path d="M19 17v4M17 19h4"/>
+            </svg>
+          </button>
+
+          <!-- Symmetry button + popover -->
+          <div class="overlay-tool">
+            <button id="symmetry-btn" class="overlay-btn" title="Symmetry Mode">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <path d="M12 3v18" stroke-dasharray="2,2"/>
+                <ellipse cx="7" cy="7" rx="3" ry="1"/>
+                <path d="M4 7v8c0 .6 1.3 1 3 1s3-.4 3-1V7"/>
+                <ellipse cx="17" cy="7" rx="3" ry="1"/>
+                <path d="M14 7v8c0 .6 1.3 1 3 1s3-.4 3-1V7"/>
+              </svg>
+            </button>
+            <div class="overlay-popover" id="symmetry-dropdown">
+              <label><input type="checkbox" id="symmetry-enabled"> Enable</label>
+              <label><input type="radio" name="symmetry-axis" value="x" checked> X axis</label>
+              <label><input type="radio" name="symmetry-axis" value="y"> Y axis</label>
+            </div>
+          </div>
+
+          <div class="overlay-divider"></div>
+
+          <!-- Navigation mode toggle -->
+          <button id="nav-mode-btn" class="overlay-btn" title="Navigation: Orbit (C to switch)">
+            <svg class="icon-orbit" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <circle cx="12" cy="12" r="3.5"/>
+              <ellipse cx="12" cy="12" rx="10" ry="4.5" transform="rotate(-20 12 12)"/>
+            </svg>
+            <svg class="icon-fly" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M2 12l20-8-8 20-2.5-9L2 12z"/>
+            </svg>
+          </button>
+
+          <!-- View presets -->
+          <div class="overlay-tool">
+            <button id="view-preset-btn" class="overlay-btn" title="Standard views">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                <rect x="3" y="3" width="8" height="8" rx="1"/>
+                <rect x="13" y="3" width="8" height="8" rx="1"/>
+                <rect x="3" y="13" width="8" height="8" rx="1"/>
+                <rect x="13" y="13" width="8" height="8" rx="1"/>
+              </svg>
+            </button>
+            <div class="overlay-popover" id="view-preset-popover">
+              <button class="preset-btn" data-preset="front">Front <kbd>1</kbd></button>
+              <button class="preset-btn" data-preset="right">Right <kbd>2</kbd></button>
+              <button class="preset-btn" data-preset="top">Top <kbd>3</kbd></button>
+              <button class="preset-btn" data-preset="iso">Isometric <kbd>4</kbd></button>
+              <button class="preset-btn" data-preset="left">Left</button>
+              <button class="preset-btn" data-preset="back">Back</button>
+            </div>
+          </div>
+
+          <!-- Zoom to fit -->
+          <button id="fit-view-btn" class="overlay-btn" title="Frame model (F)">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+              <path d="M3 8V4h4M17 4h4v4M21 16v4h-4M7 20H3v-4"/>
+              <rect x="8" y="8" width="8" height="8" rx="1"/>
+            </svg>
+          </button>
+        </div>
+
+        <div id="preview-panel" class="hidden">
+          <div class="preview-header">
+            <span>Layer Preview</span>
+            <button id="download-current-svg" class="download-btn" disabled title="Download current layer SVG">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" y1="15" x2="12" y2="3"/>
+              </svg>
+            </button>
+          </div>
+          <div id="preview-container"></div>
+          <div id="layer-navigator">
+            <div id="layer-info">
+              <span id="layer-number">Layer: 0 / 0</span>
+              <span id="layer-height">Height: 0.00 mm</span>
+            </div>
+            <input type="range" id="layer-slider" min="0" max="0" value="0" disabled
+                   title="Scrub through layers (arrow keys also work)">
+          </div>
+        </div>
+      </div>
+      <div class="status-bar">
+        <span id="status-message">Load an STL file to begin. Press ? for help</span>
+        <span id="status-stats"></span>
+      </div>
+    </div>
+
+    <div id="sidebar" class="panel">
+      <div class="panel-header">Controls</div>
+      <div id="controls-container">
+        <div class="control-group">
+          <label for="thickness-slider">Layer Thickness (mm)</label>
+          <input type="range" id="thickness-slider" min="0.1" max="5" step="0.01" value="0.5"
+                 title="Thickness of your paper stock. Each slice becomes one sheet this thick">
+          <div class="value-display" id="thickness-value">0.50 mm</div>
+        </div>
+
+        <div class="control-group">
+          <label for="paper-size">Paper Size</label>
+          <select id="paper-size" title="Sheet size used when packing pieces for export">
+            <option value="a4">A4 (210 x 297 mm)</option>
+            <option value="a3">A3 (297 x 420 mm)</option>
+            <option value="custom">Custom</option>
+          </select>
+          <div id="custom-paper-size" style="display: none; margin-top: 8px;">
+            <div class="field-row">
+              <div class="field">
+                <label class="sub-label" for="custom-paper-width">Width (mm)</label>
+                <input type="number" id="custom-paper-width" value="210" min="50" max="1000" step="1"
+                       title="Custom sheet width in millimetres">
+              </div>
+              <div class="field">
+                <label class="sub-label" for="custom-paper-height">Height (mm)</label>
+                <input type="number" id="custom-paper-height" value="297" min="50" max="1000" step="1"
+                       title="Custom sheet height in millimetres">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label for="scale-factor">Scale Factor</label>
+          <input type="number" id="scale-factor" value="1" min="0.1" max="10" step="0.1"
+                 title="Multiplies the model size in the exported SVGs, so 2 makes the finished piece twice as large">
+        </div>
+
+        <div class="control-group">
+          <div class="checkbox-group">
+            <input type="checkbox" id="show-floating" checked>
+            <label for="show-floating" title="Marks contours with nothing beneath them, which need support or a tab when stacking">Highlight Floating Sections</label>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Alignment Rods</label>
+          <div class="field-row center">
+            <label class="inline-label" for="rod-diameter">Diameter:</label>
+            <input type="range" id="rod-diameter" min="0.5" max="3" step="0.1" value="1.5" style="flex: 1;"
+                   title="Diameter of the dowel/rod, which sets the size of the registration holes punched through every layer">
+            <span id="rod-diameter-value" style="font-size: 12px; min-width: 45px;">1.5 mm</span>
+          </div>
+          <div class="checkbox-group" style="margin-top: 12px; margin-bottom: 0;">
+            <input type="checkbox" id="live-intersections" checked>
+            <label for="live-intersections" title="Live feedback while placing and adjusting rods: green rings in the 3D view where the rod stays inside the model and red arcs where it breaks out, and the holes it would cut in the layer preview. Fades the model while you aim.">Live Rod Preview</label>
+          </div>
+          <div class="rod-list" id="rod-list"></div>
+        </div>
+
+        <div class="control-group">
+          <label>Packing Settings</label>
+          <div class="field-row" style="margin-bottom: 8px;">
+            <div class="field">
+              <label class="sub-label" for="piece-spacing">Spacing (mm)</label>
+              <input type="number" id="piece-spacing" value="2" min="0.5" max="10" step="0.5"
+                     title="Gap left between packed pieces on a sheet. Increase it if your cutter needs more clearance">
+            </div>
+            <div class="field">
+              <label class="sub-label" for="number-height">Number Height (mm)</label>
+              <input type="number" id="number-height" value="5" min="2" max="15" step="0.5"
+                     title="Height of the layer number engraved on each piece">
+            </div>
+          </div>
+          <div class="checkbox-group">
+            <input type="checkbox" id="fast-packing">
+            <label for="fast-packing" title="Packs far quicker but leaves more waste, so it is good for a preview run">Fast Packing (less efficient)</label>
+          </div>
+        </div>
+
+        <div class="control-group">
+          <label>Export</label>
+          <div class="checkbox-group" style="margin-bottom: 8px;">
+            <input type="checkbox" id="show-label-cut" checked>
+            <label for="show-label-cut" title="Cuts the layer number into each piece so you can order the stack">Add Label Cut</label>
+          </div>
+          <div class="export-buttons" style="grid-template-columns: 1fr;">
+            <button id="export-zip" class="btn btn-secondary" disabled
+                    title="One SVG per layer, each on its own sheet, zipped">All SVGs (ZIP)</button>
+            <button id="export-packed" class="btn btn-secondary" disabled
+                    title="Nests every piece onto as few sheets as possible, zipped">Packed (ZIP)</button>
+          </div>
+          <div class="packing-progress" id="packing-progress">
+            <div class="packing-progress-header">
+              <div class="packing-progress-info">
+                <span id="packing-progress-text">0/0 pieces, 0 sheets</span>
+                <span id="packing-progress-time">0:00</span>
+              </div>
+              <button id="packing-cancel-btn" class="packing-cancel-btn" title="Cancel packing">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                  <line x1="18" y1="6" x2="6" y2="18"/>
+                  <line x1="6" y1="6" x2="18" y2="18"/>
+                </svg>
+              </button>
+            </div>
+            <div class="packing-progress-bar">
+              <div class="packing-progress-fill" id="packing-progress-fill"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <!-- Help overlay -->
+  <div id="help-overlay" class="help-overlay hidden" role="dialog" aria-modal="true" aria-labelledby="help-title">
+    <div class="help-backdrop" data-help-close></div>
+    <div class="help-card">
+      <div class="help-card-header">
+        <h2 id="help-title">Millefoglie Help</h2>
+        <button id="help-close-btn" class="icon-btn" data-help-close title="Close (Esc)" aria-label="Close help">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6" y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="help-card-body">
+        <section class="help-section">
+          <h3>Workflow</h3>
+          <ol>
+            <li><strong>Load</strong> an STL file: drag it onto the viewport or use <em>Load STL</em>.</li>
+            <li><strong>Set layer thickness</strong> to match your paper stock; the model re-slices as you change it.</li>
+            <li><strong>Place alignment rods</strong> so the cut layers can be threaded onto dowels and stay registered.</li>
+            <li><strong>Preview</strong> each layer in the 2D panel while scrubbing the layer slider.</li>
+            <li><strong>Export</strong> SVGs for your cutter, then cut and stack the layers.</li>
+          </ol>
+        </section>
+
+        <section class="help-section">
+          <h3>Navigation</h3>
+          <p><strong>Orbit</strong> (default) turns the camera around the model, the way a CAD viewer does.
+             <strong>Fly</strong> gives you free first-person movement, useful for getting inside a large model.
+             Press <kbd>C</kbd> to switch, or use the toolbar button.</p>
+
+          <div class="help-subhead">Orbit mode</div>
+          <div class="help-scroll">
+            <table class="help-table">
+              <tbody>
+                <tr><td>Right-drag</td><td>Orbit around the target</td></tr>
+                <tr><td>Left-click</td><td>Select a rod, or place one in rod mode</td></tr>
+                <tr><td>Middle-drag / Shift+left-drag</td><td>Pan</td></tr>
+                <tr><td>Wheel</td><td>Zoom toward the cursor</td></tr>
+                <tr><td>Double-click</td><td>Re-center the view on that point</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <div class="help-subhead">Fly mode</div>
+          <div class="help-scroll">
+            <table class="help-table">
+              <tbody>
+                <tr><td>Right-drag</td><td>Look around</td></tr>
+                <tr><td><kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></td><td>Move</td></tr>
+                <tr><td><kbd>Space</kbd> / <kbd>Ctrl</kbd></td><td>Move up / down</td></tr>
+                <tr><td>Wheel</td><td>Adjust movement speed</td></tr>
+              </tbody>
+            </table>
+          </div>
+
+          <p style="margin-top: 12px;">Standard views are on the grid button in the viewport toolbar, or number keys
+             <kbd>1</kbd>–<kbd>4</kbd>. <kbd>F</kbd> frames the whole model.</p>
+        </section>
+
+        <section class="help-section">
+          <h3>Keyboard shortcuts</h3>
+          <div class="help-scroll">
+            <table class="help-table">
+              <tbody id="help-shortcuts"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="help-section">
+          <h3>Alignment rods</h3>
+          <ul>
+            <li>Click the rod button in the viewport toolbar, then click on the model to place a rod. The camera keeps its usual buttons while placement mode is active, since orbiting is right-drag either way and the left button only ever selects or places.</li>
+            <li>Select a rod to get its gizmo: drag the <strong>red</strong> and <strong>green</strong> arrows to move it in X and Y, and the <strong>blue</strong> and <strong>orange</strong> arrows to trim its top and bottom. <kbd>I</kbd>, <kbd>J</kbd> and <kbd>K</kbd> nudge the same axes (hold <kbd>Shift</kbd> to reverse).</li>
+            <li>Green rings show where the rod runs inside the model; red arcs show where it exits, and a rod should stay green over its whole length.</li>
+            <li>With <strong>Live Rod Preview</strong> on, those rings follow the cursor while you place a rod, and the layer preview shows the holes your staged rods would cut, so you can judge a position before applying it. Turn it off if you would rather keep the model solid while aiming.</li>
+            <li><strong>Symmetry</strong> mirrors new rods across the model center on the chosen axis, and the pair stays mirrored afterwards: moving or trimming either rod moves the other to match.</li>
+            <li>Rod edits are staged. Press <strong>Apply Rod Changes</strong> to re-slice and punch the holes.</li>
+          </ul>
+        </section>
+
+        <section class="help-section">
+          <h3>Export</h3>
+          <ul>
+            <li><strong>All SVGs (ZIP)</strong>: one SVG per layer, each laid out on its own sheet. Simple to check, but wasteful of paper.</li>
+            <li><strong>Packed (ZIP)</strong>: nests every piece from every layer onto as few sheets as possible, one SVG per sheet. Each piece is engraved with its layer number.</li>
+            <li>The download button on the Layer Preview exports just the layer you are looking at.</li>
+            <li>Cut lines are black, rod holes blue, and floating sections orange so you can spot them before cutting.</li>
+          </ul>
+        </section>
+      </div>
+    </div>
+  </div>
+
+  <div id="progress-overlay" class="progress-overlay hidden">
+    <div class="progress-text" id="progress-text">Processing...</div>
+    <div class="progress-bar">
+      <div class="progress-bar-fill" id="progress-fill" style="width: 0%"></div>
+    </div>
+  </div>
+
+  <script type="module" src="/src/main.ts"></script>
+</body>
+</html>

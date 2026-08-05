@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none"
+     stroke="#e94560" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+  <!-- The app's own slice-stack glyph, from the "Show Slices" toolbar button. -->
+  <path d="M3 17l9 4 9-4v-2l-9-4-9 4v2z"/>
+  <path d="M5 11l7 3 7-3v-2l-7-3-7 3v2z"/>
+  <path d="M7 5l5 2 5-2v-2l-5-2-5 2v2z"/>
+</svg>
