@@ -35,15 +35,9 @@ jobs:
       - run: npm ci
 
       # vite.config.ts sets base: './', so the bundle resolves its assets
-      # relative to wherever it is served from: the root of
-      # millefoglie.tintan.do and /millefoglie/ on GitHub Pages alike.
+      # relative to wherever it is served from, here the root of
+      # millefoglie.tintan.do.
       - run: npm run build
-
-      # The same dist/ twice: once in the shape deploy-pages wants, once as a
-      # plain artifact for the Cloudflare job. The first goes with GitHub Pages.
-      - uses: actions/upload-pages-artifact@7b1f4a764d45c48632c6b24a0339c27f5614fb0b # v4.0.0
-        with:
-          path: dist
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -51,20 +45,6 @@ jobs:
           path: dist
           if-no-files-found: error
           retention-days: 1
-
-  # GitHub Pages, kept until millefoglie.tintan.do is verified, then removed.
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    permissions:
-      pages: write
-      id-token: write
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5
 
   # Cloudflare Pages, served at millefoglie.tintan.do. The job has no GitHub
   # token permissions at all: it downloads this run's artifact and hands it to
